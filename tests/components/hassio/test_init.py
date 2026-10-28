@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import timedelta
 import os
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import Any
 from unittest.mock import AsyncMock, Mock, call, patch
 from uuid import uuid4
@@ -28,11 +28,13 @@ from aiohasupervisor.models import (
     PartialRestoreOptions,
     SupervisorOptions,
 )
+from aiohttp import UnixConnector
 from freezegun.api import FrozenDateTimeFactory
 from probatio import Invalid
 import pytest
 from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 from pytest_homeassistant.typing import WebSocketGenerator
+from yarl import URL
 
 from homeassistant.auth.const import GROUP_ID_ADMIN
 from homeassistant.auth.models import User
@@ -65,6 +67,7 @@ from homeassistant.components.hassio.const import (
     OPTION_CORE_BACKUP_BEFORE_UPDATE,
     REQUEST_REFRESH_DELAY,
 )
+from homeassistant.components.hassio.handler import KEY_SUPERVISOR_CONNECTION
 from homeassistant.components.homeassistant import (
     DOMAIN as HOMEASSISTANT_DOMAIN,
     SERVICE_UPDATE_ENTITY,
@@ -179,6 +182,50 @@ async def test_setup_api_ping(
     assert len(supervisor_client.mock_calls) == 17
     assert get_core_info(hass)["version_latest"] == "1.0.0"
     assert is_hassio(hass)
+
+
+@pytest.mark.parametrize(
+    ("environ", "base_url", "unix_socket"),
+    [
+        pytest.param(MOCK_ENVIRON, "http://127.0.0.1", None, id="tcp"),
+        pytest.param(
+            {
+                **MOCK_ENVIRON,
+                "SUPERVISOR_SOCKET": "/run/supervisor/api/supervisor.sock",
+            },
+            "http://localhost",
+            Path("/run/supervisor/api/supervisor.sock"),
+            id="unix_socket",
+        ),
+        pytest.param(
+            {
+                "SUPERVISOR": "127.0.0.1",
+                "SUPERVISOR_SOCKET": "/run/supervisor/api/supervisor.sock",
+            },
+            "http://localhost",
+            Path("/run/supervisor/api/supervisor.sock"),
+            id="unix_socket_without_token",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("supervisor_client")
+async def test_setup_supervisor_transport(
+    hass: HomeAssistant,
+    environ: dict[str, str],
+    base_url: str,
+    unix_socket: Path | None,
+) -> None:
+    """Test Supervisor is reached over its Unix socket when one is provided."""
+    with patch.dict(os.environ, environ, clear=True):
+        assert await async_setup_component(hass, DOMAIN, {})
+        await hass.async_block_till_done()
+
+    connection = hass.data[KEY_SUPERVISOR_CONNECTION]
+    assert connection.base_url == URL(base_url)
+    assert connection.unix_socket == unix_socket
+    assert isinstance(connection.session.connector, UnixConnector) is (
+        unix_socket is not None
+    )
 
 
 async def test_setup_api_ping_fails(
@@ -650,11 +697,37 @@ async def test_setup_hassio_no_additional_data(
     assert len(supervisor_client.mock_calls) == 17
 
 
-async def test_fail_setup_without_environ_var(hass: HomeAssistant) -> None:
-    """Fail setup if no environ variable set."""
-    with patch.dict(os.environ, {}, clear=True):
+@pytest.mark.parametrize(
+    ("environ", "missing"),
+    [
+        pytest.param({}, "SUPERVISOR", id="none"),
+        pytest.param(
+            {
+                "SUPERVISOR_TOKEN": "abcdefgh",
+                "SUPERVISOR_SOCKET": "/run/supervisor/api/supervisor.sock",
+            },
+            "SUPERVISOR",
+            id="no_supervisor",
+        ),
+        pytest.param(
+            {"SUPERVISOR": "127.0.0.1"},
+            "SUPERVISOR_SOCKET or SUPERVISOR_TOKEN",
+            id="no_token_or_socket",
+        ),
+    ],
+)
+async def test_fail_setup_without_environ_var(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    environ: dict[str, str],
+    missing: str,
+) -> None:
+    """Fail setup if required environ variables are not set."""
+    with patch.dict(os.environ, environ, clear=True):
         result = await async_setup_component(hass, DOMAIN, {})
         assert not result
+
+    assert f"Missing {missing} environment variable" in caplog.text
 
 
 async def test_warn_when_cannot_connect(

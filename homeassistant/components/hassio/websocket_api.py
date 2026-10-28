@@ -32,7 +32,6 @@ from .const import (
     ATTR_TIMEOUT,
     ATTR_VERSION,
     ATTR_WS_EVENT,
-    DATA_COMPONENT,
     EVENT_SUPERVISOR_EVENT,
     WS_ID,
     WS_TYPE,
@@ -45,7 +44,7 @@ from .const import (
 )
 from .coordinator import get_addons_list
 from .exceptions import HassioNotReadyError
-from .handler import HassioAPIError, get_supervisor_client
+from .handler import HassioAPIError, get_legacy_supervisor_client, get_supervisor_client
 from .update_helper import update_addon, update_core
 
 SCHEMA_WEBSOCKET_EVENT = probatio.Schema(
@@ -136,7 +135,7 @@ async def websocket_supervisor_api(
         msg[ATTR_ENDPOINT]
     ):
         raise Unauthorized
-    supervisor = hass.data[DATA_COMPONENT]
+    supervisor = get_legacy_supervisor_client(hass)
 
     command = msg[ATTR_ENDPOINT]
     payload = msg.get(ATTR_DATA, {})
