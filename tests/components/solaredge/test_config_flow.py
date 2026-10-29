@@ -1,5 +1,6 @@
 """Tests for the SolarEdge config flow."""
 
+from http import HTTPStatus
 from unittest.mock import AsyncMock
 
 import pytest
@@ -7,6 +8,9 @@ from pytest_homeassistant.common import MockConfigEntry
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 from pytest_homeassistant.typing import ClientSessionGenerator
 
+from homeassistant.components.solaredge.application_credentials import (
+    async_register_pending_oauth_flow,
+)
 from homeassistant.components.solaredge.const import (
     CONF_SITE_ID,
     DOMAIN,
@@ -40,6 +44,18 @@ async def _complete_oauth(
         },
     )
     return await hass.config_entries.flow.async_configure(flow_id)
+
+
+async def _start_oauth(hass: HomeAssistant) -> str:
+    """Start a user flow and return its ID at the external OAuth step."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_ID: SITE_ID}
+    )
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
+    return result["flow_id"]
 
 
 @pytest.mark.usefixtures(
@@ -195,3 +211,104 @@ async def test_migration_starts_reauth(hass: HomeAssistant) -> None:
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert len(flows) == 1
     assert flows[0]["context"]["source"] == SOURCE_REAUTH
+
+
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+    "solaredge_api",
+)
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param("code=code", id="missing_site_id"),
+        pytest.param(f"site_id={SITE_ID}", id="missing_code"),
+        pytest.param("code=code&site_id=other-site", id="unknown_site"),
+    ],
+)
+async def test_invalid_callback_keeps_flow(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    aioclient_mock: AiohttpClientMocker,
+    query: str,
+) -> None:
+    """Test a malformed or foreign callback leaves the pending flow usable."""
+    flow_id = await _start_oauth(hass)
+    client = await hass_client_no_auth()
+
+    response = await client.get(f"{OAUTH2_CALLBACK_PATH}?{query}")
+    assert response.status == HTTPStatus.BAD_REQUEST
+
+    result = await _complete_oauth(hass, hass_client_no_auth, aioclient_mock, flow_id)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == SITE_ID
+
+
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+)
+async def test_early_callback_keeps_pending_flow(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """Test a callback before the authorize URL exists does not consume the flow."""
+    await _start_oauth(hass)
+    async_register_pending_oauth_flow(hass, "other-site", "other-flow")
+    client = await hass_client_no_auth()
+
+    response = await client.get(f"{OAUTH2_CALLBACK_PATH}?code=code&site_id=other-site")
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert await response.text() == "SolarEdge authorization flow is not ready"
+
+    # Still pending: a consumed flow would now report "No matching ...".
+    response = await client.get(f"{OAUTH2_CALLBACK_PATH}?code=code&site_id=other-site")
+    assert await response.text() == "SolarEdge authorization flow is not ready"
+
+
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+)
+async def test_callback_error_aborts_flow(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """Test an authorization error from SolarEdge aborts the flow."""
+    flow_id = await _start_oauth(hass)
+    client = await hass_client_no_auth()
+
+    response = await client.get(
+        f"{OAUTH2_CALLBACK_PATH}?error=access_denied&site_id={SITE_ID}"
+    )
+    assert response.status == HTTPStatus.OK
+
+    result = await hass.config_entries.flow.async_configure(flow_id)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "user_rejected_authorize"
+
+
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+)
+async def test_callback_for_removed_flow(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+) -> None:
+    """Test a callback for a flow that no longer exists is rejected."""
+    flow_id = await _start_oauth(hass)
+    hass.config_entries.flow.async_abort(flow_id)
+    client = await hass_client_no_auth()
+
+    response = await client.get(f"{OAUTH2_CALLBACK_PATH}?code=code&site_id={SITE_ID}")
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert await response.text() == "SolarEdge authorization flow expired"

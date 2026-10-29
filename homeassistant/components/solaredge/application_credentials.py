@@ -69,11 +69,8 @@ class SolarEdgeOAuth2CallbackView(http.HomeAssistantView):
 
         hass = request.app[http.KEY_HASS]
         site_id = request.query["site_id"]
-        if not (
-            pending_flow := hass.data.get(DATA_PENDING_OAUTH_FLOWS, {}).pop(
-                site_id, None
-            )
-        ):
+        pending_flows = hass.data.get(DATA_PENDING_OAUTH_FLOWS, {})
+        if (pending_flow := pending_flows.get(site_id)) is None:
             return web.Response(
                 text="No matching SolarEdge authorization flow",
                 status=HTTPStatus.BAD_REQUEST,
@@ -84,18 +81,20 @@ class SolarEdgeOAuth2CallbackView(http.HomeAssistantView):
                 text="SolarEdge authorization flow is not ready",
                 status=HTTPStatus.BAD_REQUEST,
             )
+        # Consume the pending flow only once this callback can complete it.
+        del pending_flows[site_id]
 
-        try:
-            user_input: dict[str, Any] = {
-                "state": {
-                    "flow_id": flow_id,
-                    "redirect_uri": redirect_uri,
-                }
+        user_input: dict[str, Any] = {
+            "state": {
+                "flow_id": flow_id,
+                "redirect_uri": redirect_uri,
             }
-            if "code" in request.query:
-                user_input["code"] = request.query["code"]
-            else:
-                user_input["error"] = request.query["error"]
+        }
+        if "code" in request.query:
+            user_input["code"] = request.query["code"]
+        else:
+            user_input["error"] = request.query["error"]
+        try:
             await hass.config_entries.flow.async_configure(
                 flow_id=flow_id,
                 user_input=user_input,
