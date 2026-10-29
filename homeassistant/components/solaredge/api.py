@@ -41,9 +41,9 @@ class SolarEdgeRateLimitError(UpdateFailed, SolarEdgeApiError):
         super().__init__(
             "Monthly API credit limit reached"
             if monthly_limit
-            else "API call rate limit reached"
+            else "API call rate limit reached",
+            retry_after=retry_after,
         )
-        self.retry_after = retry_after
         self.monthly_limit = monthly_limit
 
 
@@ -81,7 +81,7 @@ class SolarEdgeV2:
                 headers={"Authorization": f"Bearer {access_token}"},
                 params=params,
             )
-        except ClientError as err:
+        except (ClientError, TimeoutError) as err:
             raise SolarEdgeConnectionError from err
 
         if response.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
@@ -113,7 +113,7 @@ class SolarEdgeV2:
         try:
             response.raise_for_status()
             result = await response.json()
-        except (ClientError, ValueError) as err:
+        except (ClientError, TimeoutError, ValueError) as err:
             raise SolarEdgeConnectionError from err
         if not isinstance(result, dict | list):
             raise SolarEdgeApiError("Unexpected API response")

@@ -3,11 +3,15 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 from aiohttp import ClientError
+from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.components.recorder import Recorder
-from homeassistant.components.solaredge.api import SolarEdgeConnectionError
+from homeassistant.components.solaredge.api import (
+    SolarEdgeConnectionError,
+    SolarEdgeRateLimitError,
+)
 from homeassistant.components.solaredge.const import CONF_SITE_ID, DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME
@@ -137,6 +141,34 @@ async def test_api_key_config_not_ready(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+@pytest.mark.usefixtures("recorder_mock")
+async def test_rate_limit_waits_for_retry_after(
+    hass: HomeAssistant,
+    solaredge_api: Mock,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Test setup is retried after the API's Retry-After, not the 5s backoff."""
+    solaredge_api.get_details.side_effect = SolarEdgeRateLimitError(
+        retry_after=30, monthly_limit=False
+    )
+    mock_config_entry.add_to_hass(hass)
+
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert mock_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+    freezer.tick(10)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert solaredge_api.get_details.await_count == 1
+
+    freezer.tick(25)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert solaredge_api.get_details.await_count == 2
 
 
 async def test_web_login_config_not_ready(

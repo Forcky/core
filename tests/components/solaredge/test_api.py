@@ -6,7 +6,11 @@ import pytest
 from pytest_homeassistant.common import MockConfigEntry
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
-from homeassistant.components.solaredge.api import SolarEdgeRateLimitError, SolarEdgeV2
+from homeassistant.components.solaredge.api import (
+    SolarEdgeConnectionError,
+    SolarEdgeRateLimitError,
+    SolarEdgeV2,
+)
 from homeassistant.components.solaredge.const import (
     API_BASE_URL,
     CONF_SITE_ID,
@@ -80,11 +84,29 @@ async def test_get_overview_translates_v2_data(
     assert result["overview"]["currentPower"]["power"] == 1234
 
 
-async def test_rate_limit_error_distinguishes_monthly_limit(
+@pytest.mark.parametrize(
+    ("headers", "monthly_limit", "retry_after"),
+    [
+        pytest.param(
+            {"x-ratelimit-remaining-minute": "7"}, True, None, id="monthly_credits"
+        ),
+        pytest.param({}, False, None, id="no_headers"),
+        pytest.param(
+            {"retry-after": "30", "x-ratelimit-remaining-minute": "0"},
+            False,
+            30,
+            id="per_minute_with_retry_after",
+        ),
+    ],
+)
+async def test_rate_limit_error(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
+    headers: dict[str, str],
+    monthly_limit: bool,
+    retry_after: int | None,
 ) -> None:
-    """Test monthly credit exhaustion is distinguishable from CPM limiting."""
+    """Test 429 responses keep Retry-After and tell monthly exhaustion apart."""
 
     async def async_access_token() -> str:
         return "access-token"
@@ -92,30 +114,7 @@ async def test_rate_limit_error_distinguishes_monthly_limit(
     aioclient_mock.get(
         f"{API_BASE_URL}/sites/{SITE_ID}",
         status=429,
-        headers={"x-ratelimit-remaining-minute": "7"},
-        json={"message": "Monthly credit limit reached."},
-    )
-    api = SolarEdgeV2(async_get_clientsession(hass), async_access_token)
-
-    with pytest.raises(SolarEdgeRateLimitError) as exc_info:
-        await api.get_details(SITE_ID)
-
-    assert exc_info.value.monthly_limit
-    assert exc_info.value.retry_after is None
-
-
-async def test_rate_limit_without_headers_is_transient(
-    hass: HomeAssistant,
-    aioclient_mock: AiohttpClientMocker,
-) -> None:
-    """Test an unspecified 429 does not disable requests for the month."""
-
-    async def async_access_token() -> str:
-        return "access-token"
-
-    aioclient_mock.get(
-        f"{API_BASE_URL}/sites/{SITE_ID}",
-        status=429,
+        headers=headers,
         json={"message": "Too many requests."},
     )
     api = SolarEdgeV2(async_get_clientsession(hass), async_access_token)
@@ -123,8 +122,24 @@ async def test_rate_limit_without_headers_is_transient(
     with pytest.raises(SolarEdgeRateLimitError) as exc_info:
         await api.get_details(SITE_ID)
 
-    assert not exc_info.value.monthly_limit
-    assert exc_info.value.retry_after is None
+    assert exc_info.value.monthly_limit is monthly_limit
+    assert exc_info.value.retry_after == retry_after
+
+
+async def test_timeout_is_connection_error(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Test a request timeout surfaces as a connection error."""
+
+    async def async_access_token() -> str:
+        return "access-token"
+
+    aioclient_mock.get(f"{API_BASE_URL}/sites/{SITE_ID}", exc=TimeoutError())
+    api = SolarEdgeV2(async_get_clientsession(hass), async_access_token)
+
+    with pytest.raises(SolarEdgeConnectionError):
+        await api.get_details(SITE_ID)
 
 
 async def test_get_inventory_accepts_top_level_device_list(

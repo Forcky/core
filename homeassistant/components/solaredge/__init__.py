@@ -54,6 +54,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SolarEdgeConfigEntry) ->
                 translation_key=(
                     "monthly_credit_limit" if ex.monthly_limit else "rate_limit"
                 ),
+                retry_after=ex.retry_after,
             ) from ex
         except SolarEdgeApiError as ex:
             raise ConfigEntryNotReady(
