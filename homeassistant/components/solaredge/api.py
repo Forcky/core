@@ -185,15 +185,7 @@ class SolarEdgeV2:
         ):
             raise SolarEdgeApiError("Unexpected energy response")
         production = _mapping(daily.get("production"))
-        current_power = _latest_meter_value(meter, "productionPower")
-        if current_power is None:
-            power = await self._get_site_power(site_id, now)
-            values = _find_list(power, "values")
-            current_power = (
-                _find_number(values[-1], "value")
-                if values
-                else _find_number(power, "value")
-            )
+        current_power = await self._get_production_power(site_id, now, meter)
         return {
             "overview": {
                 "lifeTimeData": {
@@ -332,10 +324,23 @@ class SolarEdgeV2:
             raise SolarEdgeApiError("Unexpected site power response")
         return result
 
+    async def _get_production_power(
+        self, site_id: str, now: datetime, meter: dict[str, Any]
+    ) -> float | None:
+        """Return PV power from a production meter, else the latest site power."""
+        if (power := _latest_meter_value(meter, "productionPower")) is not None:
+            return power
+        # Import/export meters report no productionPower.
+        site_power = await self._get_site_power(site_id, now)
+        if values := _find_list(site_power, "values"):
+            return _find_number(values[-1], "value")
+        return _find_number(site_power, "value")
+
     async def get_current_power_flow(self, site_id: str) -> dict[str, Any]:
         """Return meter telemetry in the V1 power-flow shape."""
         now = dt_util.now()
         meter = await self._get_meter_telemetry(site_id, now)
+        production = await self._get_production_power(site_id, now, meter)
         storage: dict[str, Any] = {}
         if cached_inventory := self._cache.get(f"devices:{site_id}"):
             if any(
@@ -347,7 +352,6 @@ class SolarEdgeV2:
                     now.replace(hour=0, minute=0, second=0, microsecond=0),
                     now,
                 )
-        production = _latest_meter_value(meter, "productionPower")
         consumption = _latest_meter_value(meter, "consumptionPower")
         imported = _latest_meter_value(meter, "importPower")
         exported = _latest_meter_value(meter, "exportPower")

@@ -240,6 +240,55 @@ async def test_power_flow_accepts_serial_keyed_telemetry(
     assert {"from": "PV", "to": "STORAGE"} in power_flow["connections"]
 
 
+async def test_power_flow_without_production_meter_uses_site_power(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Test PV power comes from /power when the meters only measure the grid."""
+
+    async def async_access_token() -> str:
+        return "access-token"
+
+    def metric(unit: str, value: float) -> dict:
+        return {
+            "unit": unit,
+            "values": [{"timestamp": "2026-10-27T06:15:00+11:00", "value": value}],
+        }
+
+    aioclient_mock.get(
+        f"{API_BASE_URL}/sites/{SITE_ID}/meters/telemetry",
+        json={
+            "meters": {
+                "meter-1": {
+                    "importPower": metric("W", 400.0),
+                    "exportPower": metric("W", 0.0),
+                },
+                "CONSUMPTION": {"consumptionPower": metric("W", 520.0)},
+            }
+        },
+    )
+    aioclient_mock.get(
+        f"{API_BASE_URL}/sites/{SITE_ID}/power",
+        json={
+            "unit": "W",
+            "resolution": "QUARTER_HOUR",
+            "values": [
+                {"timestamp": "2026-10-27T06:00:00+11:00", "value": 0.0},
+                {"timestamp": "2026-10-27T06:15:00+11:00", "value": 120.0},
+            ],
+        },
+    )
+    api = SolarEdgeV2(async_get_clientsession(hass), async_access_token)
+
+    result = await api.get_current_power_flow(SITE_ID)
+
+    power_flow = result["siteCurrentPowerFlow"]
+    assert power_flow["PV"]["currentPower"] == 120.0
+    assert power_flow["LOAD"]["currentPower"] == 520.0
+    assert power_flow["GRID"]["currentPower"] == 400.0
+    assert power_flow["connections"] == [{"from": "GRID", "to": "Load"}]
+
+
 async def test_rotated_refresh_token_is_persisted(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
