@@ -45,12 +45,10 @@ async def test_get_overview_translates_v2_data(
                 "fromGrid": 0.8,
             },
         },
-        repeat=True,
     )
     aioclient_mock.get(
         f"{API_BASE_URL}/sites/{SITE_ID}/energy",
         json={"unit": "KWH", "values": [{"value": 12.0}]},
-        repeat=True,
     )
     aioclient_mock.get(
         f"{API_BASE_URL}/sites/{SITE_ID}/lifetime-energy",

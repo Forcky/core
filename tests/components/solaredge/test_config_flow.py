@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock
 
+import pytest
 from pytest_homeassistant.common import MockConfigEntry
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 from pytest_homeassistant.typing import ClientSessionGenerator
@@ -13,7 +14,7 @@ from homeassistant.components.solaredge.const import (
     OAUTH2_CALLBACK_PATH,
     OAUTH2_TOKEN,
 )
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_RECONFIGURE, SOURCE_USER
+from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
 from homeassistant.const import CONF_API_KEY, CONF_TOKEN
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -41,14 +42,17 @@ async def _complete_oauth(
     return await hass.config_entries.flow.async_configure(flow_id)
 
 
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+    "solaredge_api",
+)
 async def test_full_flow(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     aioclient_mock: AiohttpClientMocker,
-    current_request_with_host: None,
-    setup_credentials: None,
-    mock_setup_entry: AsyncMock,
-    solaredge_api: AsyncMock,
 ) -> None:
     """Test OAuth setup."""
     result = await hass.config_entries.flow.async_init(
@@ -68,8 +72,7 @@ async def test_full_flow(
     assert "code_challenge=" in result["url"]
     assert "code_challenge_method=S256" in result["url"]
     assert (
-        "redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fsolaredge%2Foauth%2Fcallback"
-        in result["url"]
+        "redirect_uri=https://example.com/api/solaredge/oauth/callback" in result["url"]
     )
 
     result = await _complete_oauth(
@@ -82,13 +85,16 @@ async def test_full_flow(
     assert aioclient_mock.mock_calls[-1][2]["code_verifier"]
 
 
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+)
 async def test_site_not_active(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     aioclient_mock: AiohttpClientMocker,
-    current_request_with_host: None,
-    setup_credentials: None,
-    mock_setup_entry: AsyncMock,
     solaredge_api: AsyncMock,
 ) -> None:
     """Test an inactive site is rejected."""
@@ -108,14 +114,17 @@ async def test_site_not_active(
     assert result["reason"] == "site_not_active"
 
 
+@pytest.mark.usefixtures(
+    "recorder_mock",
+    "current_request_with_host",
+    "setup_credentials",
+    "mock_setup_entry",
+    "solaredge_api",
+)
 async def test_reauth_migrates_api_key_entry(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     aioclient_mock: AiohttpClientMocker,
-    current_request_with_host: None,
-    setup_credentials: None,
-    mock_setup_entry: AsyncMock,
-    solaredge_api: AsyncMock,
 ) -> None:
     """Test OAuth reauth removes the retired API key and keeps the site ID."""
     entry = MockConfigEntry(
@@ -144,10 +153,8 @@ async def test_reauth_migrates_api_key_entry(
     assert entry.data[CONF_TOKEN]["refresh_token"] == "refresh-token"
 
 
-async def test_reconfigure_keeps_oauth_token(
-    hass: HomeAssistant,
-    mock_setup_entry: AsyncMock,
-) -> None:
+@pytest.mark.usefixtures("recorder_mock", "mock_setup_entry")
+async def test_reconfigure_keeps_oauth_token(hass: HomeAssistant) -> None:
     """Test reconfigure does not replace OAuth data."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -161,22 +168,15 @@ async def test_reconfigure_keeps_oauth_token(
         version=2,
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": SOURCE_RECONFIGURE,
-            "entry_id": entry.entry_id,
-        },
-    )
+    result = await entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_TOKEN] == TOKEN
 
 
-async def test_migration_starts_reauth(
-    hass: HomeAssistant,
-) -> None:
+@pytest.mark.usefixtures("recorder_mock")
+async def test_migration_starts_reauth(hass: HomeAssistant) -> None:
     """Test a V1 API-key entry is migrated and requests OAuth reauth."""
     entry = MockConfigEntry(
         domain=DOMAIN,
