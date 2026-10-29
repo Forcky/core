@@ -107,7 +107,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: SolarEdgeConfigEntry) -
     await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
 
-async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
     """Migrate legacy API-key entries to the OAuth-capable entry version."""
     if config_entry.version == 1:
         hass.config_entries.async_update_entry(
@@ -115,4 +115,3 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             unique_id=config_entry.unique_id or config_entry.data[CONF_SITE_ID],
             version=2,
         )
-    return True

@@ -177,9 +177,11 @@ class SolarEdgeV2:
         )
         meter = await self._get_meter_telemetry(site_id, now)
 
-        if not all(
-            isinstance(response, dict)
-            for response in (daily, monthly, yearly, lifetime, meter)
+        if not (
+            isinstance(daily, dict)
+            and isinstance(monthly, dict)
+            and isinstance(yearly, dict)
+            and isinstance(lifetime, dict)
         ):
             raise SolarEdgeApiError("Unexpected energy response")
         production = _mapping(daily.get("production"))
